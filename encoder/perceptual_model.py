@@ -1,29 +1,56 @@
+from __future__ import absolute_import, division, print_function, unicode_literals
+import tensorflow as tf
+#import tensorflow_probability as tfp
+#tf.enable_eager_execution()
+
 import os
 import bz2
 import PIL.Image
+from PIL import ImageFilter
 import numpy as np
-import tensorflow as tf
 from keras.models import Model
 from keras.utils import get_file
 from keras.applications.vgg16 import VGG16, preprocess_input
 import keras.backend as K
 import traceback
+import dnnlib.tflib as tflib
 
-def load_images(images_list, image_size=256):
+def load_images(images_list, image_size=256, sharpen=False):
     loaded_images = list()
     for img_path in images_list:
-      img = PIL.Image.open(img_path).convert('RGB').resize((image_size,image_size),PIL.Image.LANCZOS)
+      img = PIL.Image.open(img_path).convert('RGB')
+      if image_size is not None:
+        img = img.resize((image_size,image_size),PIL.Image.LANCZOS)
+        if (sharpen):
+            img = img.filter(ImageFilter.DETAIL)
       img = np.array(img)
       img = np.expand_dims(img, 0)
       loaded_images.append(img)
     loaded_images = np.vstack(loaded_images)
     return loaded_images
 
+def tf_custom_adaptive_loss(a,b):
+    from adaptive import lossfun
+    shape = a.get_shape().as_list()
+    dim = np.prod(shape[1:])
+    a = tf.reshape(a, [-1, dim])
+    b = tf.reshape(b, [-1, dim])
+    loss, _, _ = lossfun(b-a, var_suffix='1')
+    return tf.math.reduce_mean(loss)
+
+def tf_custom_adaptive_rgb_loss(a,b):
+    from adaptive import image_lossfun
+    loss, _, _ = image_lossfun(b-a, color_space='RGB', representation='PIXEL')
+    return tf.math.reduce_mean(loss)
+
 def tf_custom_l1_loss(img1,img2):
   return tf.math.reduce_mean(tf.math.abs(img2-img1), axis=None)
 
 def tf_custom_logcosh_loss(img1,img2):
   return tf.math.reduce_mean(tf.keras.losses.logcosh(img1,img2))
+
+def create_stub(batch_size):
+    return tf.constant(0, dtype='float32', shape=(batch_size, 0))
 
 def unpack_bz2(src_path):
     data = bz2.BZ2File(src_path).read()
@@ -61,6 +88,8 @@ class PerceptualModel:
         self.l1_penalty = args.use_l1_penalty
         if (self.l1_penalty <= self.epsilon):
             self.l1_penalty = None
+        self.adaptive_loss = args.use_adaptive_loss
+        self.sharpen_input = args.sharpen_input
         self.batch_size = batch_size
         if perc_model is not None and self.lpips_loss is not None:
             self.perc_model = perc_model
@@ -72,6 +101,12 @@ class PerceptualModel:
         self.ref_img_features = None
         self.features_weight = None
         self.loss = None
+        self.discriminator_loss = args.use_discriminator_loss
+        if (self.discriminator_loss <= self.epsilon):
+            self.discriminator_loss = None
+        if self.discriminator_loss is not None:
+            self.discriminator = None
+            self.stub = create_stub(batch_size)
 
         if self.face_mask:
             import dlib
@@ -81,11 +116,6 @@ class PerceptualModel:
                                                     LANDMARKS_MODEL_URL, cache_subdir='temp'))
             self.predictor = dlib.shape_predictor(landmarks_model_path)
 
-    def compare_images(self,img1,img2):
-        if self.perc_model is not None:
-            return self.perc_model.get_output_for(tf.transpose(img1, perm=[0,3,2,1]), tf.transpose(img2, perm=[0,3,2,1]))
-        return 0
-
     def add_placeholder(self, var_name):
         var_val = getattr(self, var_name)
         setattr(self, var_name + "_placeholder", tf.placeholder(var_val.dtype, shape=var_val.get_shape()))
@@ -94,7 +124,7 @@ class PerceptualModel:
     def assign_placeholder(self, var_name, var_val):
         self.sess.run(getattr(self, var_name + "_op"), {getattr(self, var_name + "_placeholder"): var_val})
 
-    def build_perceptual_model(self, generator):
+    def build_perceptual_model(self, generator, discriminator=None):
         # Learning rate
         global_step = tf.Variable(0, dtype=tf.int32, trainable=False, name="global_step")
         incremented_global_step = tf.assign_add(global_step, 1)
@@ -102,6 +132,9 @@ class PerceptualModel:
         self.learning_rate = tf.train.exponential_decay(self.lr, incremented_global_step,
                 self.decay_steps, self.decay_rate, staircase=True)
         self.sess.run([self._reset_global_step])
+
+        if self.discriminator_loss is not None:
+            self.discriminator = discriminator
 
         generated_image_tensor = generator.generated_image
         generated_image = tf.image.resize_nearest_neighbor(generated_image_tensor,
@@ -126,22 +159,37 @@ class PerceptualModel:
             self.add_placeholder("ref_img_features")
             self.add_placeholder("features_weight")
 
+        if self.perc_model is not None and self.lpips_loss is not None:
+            img1 = tflib.convert_images_from_uint8(self.ref_weight * self.ref_img, nhwc_to_nchw=True)
+            img2 = tflib.convert_images_from_uint8(self.ref_weight * generated_image, nhwc_to_nchw=True)
+
         self.loss = 0
         # L1 loss on VGG16 features
         if (self.vgg_loss is not None):
-            self.loss += self.vgg_loss * tf_custom_l1_loss(self.features_weight * self.ref_img_features, self.features_weight * generated_img_features)
+            if self.adaptive_loss:
+                self.loss += self.vgg_loss * tf_custom_adaptive_loss(self.features_weight * self.ref_img_features, self.features_weight * generated_img_features)
+            else:
+                self.loss += self.vgg_loss * tf_custom_logcosh_loss(self.features_weight * self.ref_img_features, self.features_weight * generated_img_features)
         # + logcosh loss on image pixels
         if (self.pixel_loss is not None):
-            self.loss += self.pixel_loss * tf_custom_logcosh_loss(self.ref_weight * self.ref_img, self.ref_weight * generated_image)
+            if self.adaptive_loss:
+                self.loss += self.pixel_loss * tf_custom_adaptive_rgb_loss(self.ref_weight * self.ref_img, self.ref_weight * generated_image)
+            else:
+                self.loss += self.pixel_loss * tf_custom_logcosh_loss(self.ref_weight * self.ref_img, self.ref_weight * generated_image)
         # + MS-SIM loss on image pixels
         if (self.mssim_loss is not None):
             self.loss += self.mssim_loss * tf.math.reduce_mean(1-tf.image.ssim_multiscale(self.ref_weight * self.ref_img, self.ref_weight * generated_image, 1))
         # + extra perceptual loss on image pixels
         if self.perc_model is not None and self.lpips_loss is not None:
-            self.loss += self.lpips_loss * tf.math.reduce_mean(self.compare_images(self.ref_weight * self.ref_img, self.ref_weight * generated_image))
+            self.loss += self.lpips_loss * tf.math.reduce_mean(self.perc_model.get_output_for(img1, img2))
         # + L1 penalty on dlatent weights
         if self.l1_penalty is not None:
             self.loss += self.l1_penalty * 512 * tf.math.reduce_mean(tf.math.abs(generator.dlatent_variable-generator.get_dlatent_avg()))
+        # discriminator loss (realism)
+        if self.discriminator_loss is not None:
+            self.loss += self.discriminator_loss * tf.math.reduce_mean(self.discriminator.get_output_for(tflib.convert_images_from_uint8(generated_image_tensor, nhwc_to_nchw=True), self.stub))
+        # - discriminator_network.get_output_for(tflib.convert_images_from_uint8(ref_img, nhwc_to_nchw=True), stub)
+
 
     def generate_face_mask(self, im):
         from imutils import face_utils
@@ -174,10 +222,10 @@ class PerceptualModel:
 
     def set_reference_images(self, images_list):
         assert(len(images_list) != 0 and len(images_list) <= self.batch_size)
-        loaded_image = load_images(images_list, self.img_size)
+        loaded_image = load_images(images_list, self.img_size, sharpen=self.sharpen_input)
         image_features = None
         if self.perceptual_model is not None:
-            image_features = self.perceptual_model.predict_on_batch(preprocess_input(loaded_image))
+            image_features = self.perceptual_model.predict_on_batch(preprocess_input(np.array(loaded_image)))
             weight_mask = np.ones(self.features_weight.shape)
 
         if self.face_mask:
@@ -233,13 +281,26 @@ class PerceptualModel:
         self.assign_placeholder("ref_weight", image_mask)
         self.assign_placeholder("ref_img", loaded_image)
 
-    def optimize(self, vars_to_optimize, iterations=200):
+    def optimize(self, vars_to_optimize, iterations=200, use_optimizer='adam'):
         vars_to_optimize = vars_to_optimize if isinstance(vars_to_optimize, list) else [vars_to_optimize]
-        optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
-        min_op = optimizer.minimize(self.loss, var_list=[vars_to_optimize])
-        self.sess.run(tf.variables_initializer(optimizer.variables()))
+        if use_optimizer == 'lbfgs':
+            optimizer = tf.contrib.opt.ScipyOptimizerInterface(self.loss, var_list=vars_to_optimize, method='L-BFGS-B', options={'maxiter': iterations})
+        else:
+            if use_optimizer == 'ggt':
+                optimizer = tf.contrib.opt.GGTOptimizer(learning_rate=self.learning_rate)
+            else:
+                optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
+            min_op = optimizer.minimize(self.loss, var_list=[vars_to_optimize])
+            self.sess.run(tf.variables_initializer(optimizer.variables()))
+            fetch_ops = [min_op, self.loss, self.learning_rate]
+        #min_op = optimizer.minimize(self.sess)
+        #optim_results = tfp.optimizer.lbfgs_minimize(make_val_and_grad_fn(get_loss), initial_position=vars_to_optimize, num_correction_pairs=10, tolerance=1e-8)
         self.sess.run(self._reset_global_step)
-        fetch_ops = [min_op, self.loss, self.learning_rate]
+        #self.sess.graph.finalize()  # Graph is read-only after this statement.
         for _ in range(iterations):
-            _, loss, lr = self.sess.run(fetch_ops)
-            yield {"loss":loss, "lr": lr}
+            if use_optimizer == 'lbfgs':
+                optimizer.minimize(self.sess, fetches=[vars_to_optimize, self.loss])
+                yield {"loss":self.loss.eval()}
+            else:
+                _, loss, lr = self.sess.run(fetch_ops)
+                yield {"loss":loss,"lr":lr}
