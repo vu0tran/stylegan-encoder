@@ -43,7 +43,7 @@ def image_align(src_file, dst_file, face_landmarks, output_size=1024, transform_
         if not os.path.isfile(src_file):
             print('\nCannot find source image. Please run "--wilds" before "--align".')
             return
-        img = PIL.Image.open(src_file)
+        img = PIL.Image.open(src_file).convert('RGBA').convert('RGB')
 
         # Shrink.
         shrink = int(np.floor(qsize / output_size * 0.5))
