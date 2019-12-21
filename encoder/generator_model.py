@@ -24,7 +24,7 @@ def create_variable_for_generator(name, batch_size, tiled_dlatent, model_scale=1
 
 
 class Generator:
-    def __init__(self, model, batch_size, clipping_threshold=2, tiled_dlatent=False, model_res=1024, randomize_noise=False):
+    def __init__(self, model, batch_size, custom_input=None, clipping_threshold=2, tiled_dlatent=False, model_res=1024, randomize_noise=False):
         self.batch_size = batch_size
         self.tiled_dlatent=tiled_dlatent
         self.model_scale = int(2*(math.log(model_res,2)-1)) # For example, 1024 -> 18
