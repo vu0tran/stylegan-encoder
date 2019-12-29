@@ -4,6 +4,8 @@
 ![cuDNN 7.3.1](https://img.shields.io/badge/cudnn-7.3.1-green.svg?style=plastic)
 ![License CC BY-NC](https://img.shields.io/badge/license-CC_BY--NC-green.svg?style=plastic)
 
+[StyleGAN2 port here](https://github.com/robertluxemburg/stylegan2encoder) by @robertluxemburg
+
 *This is my StyleGAN Encoder; there are many like it, but this one is mine. Thanks to @Puzer for the original, of which this is a fork, and to @SimJeg for the initial code that formed the basis of the ResNet model used here, and to @Pender for his fork as well!*
 
 ![Example image](./mona_example.jpg)
