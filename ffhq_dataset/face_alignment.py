@@ -20,7 +20,7 @@ def simple_image_crop(src_file, dst_file, face_landmarks, output_size=1024):
     img_cropped = img.crop((left, top, right, bottom))
 
     # Resize cropped image
-    img_cropped = img_cropped.resize((output_size, output_size), Image.ANTIALIAS)
+    img_cropped = img_cropped.resize((output_size, output_size), PIL.Image.ANTIALIAS)
 
     # Save cropped image
     img_cropped.save(dst_file, 'PNG')
