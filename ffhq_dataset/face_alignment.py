@@ -90,3 +90,5 @@ def image_align(src_file, dst_file, face_landmarks, output_size=1024, transform_
 
         # Save aligned image.
         img.save(dst_file, 'PNG')
+
+        return [transform_size, (quad + 0.5).flatten()]
