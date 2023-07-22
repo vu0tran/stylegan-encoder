@@ -3,6 +3,29 @@ import scipy.ndimage
 import os
 import PIL.Image
 
+def simple_image_crop(src_file, dst_file, face_landmarks, output_size=1024):
+    # Convert landmarks to numpy array
+    lm = np.array(face_landmarks)
+
+    # Define points for left, right, top, and bottom
+    left = np.min(lm[:, 0])
+    right = np.max(lm[:, 0])
+    top = np.min(lm[:, 1])
+    bottom = np.max(lm[:, 1])
+
+    # Open image file
+    img = Image.open(src_file)
+
+    # Crop image
+    img_cropped = img.crop((left, top, right, bottom))
+
+    # Resize cropped image
+    img_cropped = img_cropped.resize((output_size, output_size), Image.ANTIALIAS)
+
+    # Save cropped image
+    img_cropped.save(dst_file, 'PNG')
+
+    return [output_size, (left, top, right, bottom)]
 
 def image_align(src_file, dst_file, face_landmarks, output_size=1024, transform_size=4096, enable_padding=True, x_scale=1, y_scale=1, em_scale=0.1, alpha=False):
         # Align function from FFHQ dataset pre-processing step
