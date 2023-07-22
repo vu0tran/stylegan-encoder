@@ -14,7 +14,7 @@ def simple_image_crop(src_file, dst_file, face_landmarks, output_size=1024):
     bottom = np.max(lm[:, 1])
 
     # Open image file
-    img = Image.open(src_file)
+    img = PIL.Image.open(src_file).convert('RGBA').convert('RGB')
 
     # Crop image
     img_cropped = img.crop((left, top, right, bottom))
