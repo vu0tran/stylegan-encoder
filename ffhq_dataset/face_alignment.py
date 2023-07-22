@@ -8,10 +8,13 @@ def simple_image_crop(src_file, dst_file, face_landmarks, output_size=1024):
     lm = np.array(face_landmarks)
 
     # Define points for left, right, top, and bottom
-    left = np.min(lm[:, 0])
-    right = np.max(lm[:, 0])
-    top = np.min(lm[:, 1])
-    bottom = np.max(lm[:, 1])
+    margin_x = (np.max(lm[:, 0]) - np.min(lm[:, 0])) * 0.2  # 20% of width
+    margin_y = (np.max(lm[:, 1]) - np.min(lm[:, 1])) * 0.2  # 20% of height
+    left = np.min(lm[:, 0]) - margin_x
+    right = np.max(lm[:, 0]) + margin_x
+    top = np.min(lm[:, 1]) - margin_y
+    bottom = np.max(lm[:, 1]) + margin_y
+
 
     # Open image file
     img = PIL.Image.open(src_file).convert('RGBA').convert('RGB')
